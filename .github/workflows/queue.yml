@@ -1,0 +1,130 @@
+name: Files d'attente
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: queue
+  cancel-in-progress: true
+jobs:
+  queue:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Relever les files d'attente
+        run: |
+          mkdir -p out tools
+          cat > tools/relever_files.py <<'PYEOF'
+          #!/usr/bin/env python3
+          """Relève la file d'attente des serveurs DayZ pleins (mot-clé A2S "lqsN") et écrit out/queue.json."""
+          import ipaddress, json, os, re, socket, sys, time, urllib.request
+          from concurrent.futures import ThreadPoolExecutor
+
+          DZSA = os.environ.get("DZSA_URL", "https://dayzsalauncher.com/api/v1/launcher/servers/dayz")
+          ALLOW_PRIVATE = os.environ.get("ALLOW_PRIVATE") == "1"
+          OUT = os.environ.get("OUT", "out/queue.json")
+          MAX_PROBE = 1500
+          REQ = b"\xff\xff\xff\xffTSource Engine Query\x00"
+
+
+          def cstr(b, i):
+              j = b.index(b"\x00", i)
+              return b[i:j].decode("utf-8", "replace"), j + 1
+
+
+          def parse_info(d):
+              if d[:4] != b"\xff\xff\xff\xff" or d[4:5] != b"I":
+                  raise ValueError("réponse inattendue")
+              i = 6
+              _, i = cstr(d, i)
+              for _ in range(3):
+                  _, i = cstr(d, i)
+              i += 2
+              i += 7
+              _, i = cstr(d, i)
+              kw = ""
+              if i < len(d):
+                  edf = d[i]; i += 1
+                  if edf & 0x80: i += 2
+                  if edf & 0x10: i += 8
+                  if edf & 0x40:
+                      i += 2; _, i = cstr(d, i)
+                  if edf & 0x20: kw, i = cstr(d, i)
+              m = re.search(r"(?:^|,)lqs(\d+)(?:,|$)", kw)
+              return (int(m.group(1)) if m else None)
+
+
+          def query(addr):
+              ip, port = addr
+              for _ in range(2):
+                  s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                  s.settimeout(2.0)
+                  try:
+                      s.sendto(REQ, (ip, port))
+                      d = s.recv(4096)
+                      if d[4:5] == b"A":
+                          s.sendto(REQ + d[5:9], (ip, port))
+                          d = s.recv(4096)
+                      return ("ok", parse_info(d))
+                  except Exception:
+                      continue
+                  finally:
+                      s.close()
+              return ("fail", None)
+
+
+          def usable(ip):
+              try:
+                  return ALLOW_PRIVATE or ipaddress.ip_address(ip).is_global
+              except ValueError:
+                  return False
+
+
+          def main():
+              req = urllib.request.Request(DZSA, headers={"User-Agent": "DZSpotter-queue/1.0", "Accept": "application/json"})
+              with urllib.request.urlopen(req, timeout=120) as r:
+                  servers = json.load(r)["result"]
+              targets, seen = [], set()
+              for s in servers:
+                  e = s.get("endpoint") or {}
+                  mx, pl = s.get("maxPlayers") or 0, s.get("players") or 0
+                  if mx > 0 and pl >= mx - 1 and e.get("ip") and e.get("port") and usable(e["ip"]):
+                      k = (e["ip"], int(e["port"]))
+                      if k not in seen:
+                          seen.add(k); targets.append(k)
+              targets = targets[:MAX_PROBE]
+              with ThreadPoolExecutor(max_workers=200) as ex:
+                  results = list(ex.map(query, targets))
+              queues, responded, tagged = {}, 0, 0
+              for (ip, port), (st, q) in zip(targets, results):
+                  if st == "ok":
+                      responded += 1
+                      if q is not None:
+                          tagged += 1
+                          if q > 0:
+                              queues[f"{ip}:{port}"] = q
+              print(f"Serveurs dans la liste : {len(servers)} | pleins interrogés : {len(targets)} | ont répondu : {responded} | annoncent une file : {tagged} | file > 0 : {len(queues)}")
+              for k, v in sorted(queues.items(), key=lambda x: -x[1])[:5]:
+                  print("  ", k, v)
+              if targets and responded == 0:
+                  sys.exit("Aucun serveur n'a répondu en UDP : relevé abandonné, les anciennes données sont conservées.")
+              os.makedirs(os.path.dirname(OUT) or ".", exist_ok=True)
+              with open(OUT, "w") as f:
+                  json.dump({"updated": int(time.time()), "probed": len(targets), "responded": responded, "queues": queues}, f, separators=(",", ":"))
+
+
+          if __name__ == "__main__":
+              main()
+          PYEOF
+          python3 tools/relever_files.py
+      - name: Publier sur la branche data
+        run: |
+          cd out
+          git init -q -b data
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add queue.json
+          git commit -qm "files d'attente $(date -u +%FT%TZ)"
+          git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" data
