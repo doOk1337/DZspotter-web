@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0c0c0d">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="DZSpotter">
+<title>DZSpotter</title>
+<style>
+:root{--bg:#0c0c0d;--panel:#161517;--line:#2c2224;--text:#ece6e0;--mute:#9b8f8c;--amber:#c1121f;--hot:#ff4a52;--full:#e8a634;color-scheme:dark}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--text);font:16px/1.35 "Bahnschrift","Roboto Condensed","Arial Narrow",system-ui,sans-serif;padding:env(safe-area-inset-bottom) 0}
+header{position:sticky;top:0;z-index:2;background:var(--bg);border-bottom:1px solid var(--line);padding:calc(10px + max(env(safe-area-inset-top),var(--safe-area-inset-top,0px))) 14px 0}
+.top{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+h1{margin:0;font-size:25px;font-weight:700;letter-spacing:.5px}h1 b{color:var(--hot)}
+#status{font-size:13px;color:var(--mute);text-align:right}
+nav{display:flex;gap:22px;margin-top:6px}
+nav button{background:none;border:0;border-bottom:3px solid transparent;color:var(--mute);font:inherit;font-size:17px;padding:8px 0;cursor:pointer}
+nav button[aria-selected=true]{color:var(--text);border-color:var(--amber)}
+main{padding:12px 14px 40px;max-width:720px;margin:0 auto}
+.bar{margin-bottom:10px}
+input[type=search]{width:100%;background:var(--panel);border:1px solid var(--line);border-radius:6px;color:var(--text);font:inherit;padding:11px 12px}
+input:focus,select:focus,button:focus-visible{outline:2px solid var(--hot);outline-offset:1px}
+.mapsel{width:100%;background:var(--panel);border:1px solid var(--line);border-radius:6px;color:var(--text);font:inherit;padding:11px 12px;margin-top:8px}
+.time{font-size:12px;color:var(--mute);margin-top:3px;white-space:nowrap}
+.time.day{color:var(--full)}
+.opts{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:6px;font-size:14px;color:var(--mute)}
+.opts label{display:flex;align-items:center;gap:6px;cursor:pointer}
+input[type=checkbox]{accent-color:var(--amber);width:18px;height:18px}
+.btn{background:var(--amber);color:#fff;border:0;border-radius:6px;font:inherit;font-weight:700;padding:8px 14px;cursor:pointer}
+.opts .btn{margin-left:auto}
+ul{list-style:none;margin:0;padding:0}
+.row{display:flex;gap:10px;align-items:center;padding:12px 0;border-bottom:1px solid var(--line)}
+.main{flex:1;min-width:0}
+.name{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word}
+.meta{font-size:13px;color:var(--mute);margin-top:2px;word-break:break-word}
+.pop{width:84px;text-align:right}
+.pop b{font-size:18px}
+.pop small{color:var(--mute)}
+.gauge{height:5px;background:var(--line);border-radius:3px;margin-top:5px;overflow:hidden}
+.gauge i{display:block;height:100%;background:var(--hot)}
+.gauge i.full{background:var(--full)}
+.off .pop b{color:var(--mute)}
+.ico{background:none;border:0;color:var(--mute);font:inherit;font-size:22px;padding:6px;cursor:pointer;line-height:1}
+.ico.on{color:var(--hot)}
+.cp{font-size:13px;border:1px solid var(--line);border-radius:6px;padding:6px 8px;color:var(--text)}
+.msg{color:var(--mute);padding:24px 0;text-align:center}
+.more{display:block;margin:16px auto 0}
+.err{background:#2a0e10;border:1px solid var(--amber);border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:14px;word-break:break-word}
+</style>
+</head>
+<body>
+<header>
+  <div class="top"><h1><b>DZ</b>Spotter</h1><span id="status"></span></div>
+  <nav role="tablist">
+    <button role="tab" id="t-favs" aria-selected="true">Favoris</button>
+    <button role="tab" id="t-all" aria-selected="false">Serveurs</button>
+  </nav>
+</header>
+<main>
+  <div id="tools"></div>
+  <div id="err"></div>
+  <ul id="list"></ul>
+</main>
+<script>
+// Source des données : l'API publique non officielle utilisée par DZSA Launcher.
+const DZSA = "https://dayzsalauncher.com/api/v1";
+
+const $ = s => document.querySelector(s);
+const store = {
+  get(k, d){ try { return JSON.parse(localStorage.getItem(k)) ?? d } catch { return d } },
+  set(k, v){ try { localStorage.setItem(k, JSON.stringify(v)) } catch {} }
+};
+let favs = store.get("favs2", []);      // clés "ip:portRequête"
+let cache = store.get("cache2", {});    // clé -> dernier état connu
+let tab = "favs", all = [], loading = false, loadedAt = 0, favAt = 0;
+let q = "", hideEmpty = true, noPw = false, mapSel = "", shown = 100, err = "";
+const OFFICIAL = { chernarusplus: "Chernarus", enoch: "Livonia", sakhal: "Sakhal" };
+const mapKey = s => (s.map || "").toLowerCase().trim();
+const cap = k => k.charAt(0).toUpperCase() + k.slice(1);
+const parseTime = v => { const m = String(v ?? "").match(/(\d{1,2}):(\d{2})/); return m ? m[1].padStart(2, "0") + ":" + m[2] : ""; };
+// En APK, la requête part en natif (pas de CORS, délai long pour la grosse liste).
+async function get(url){
+  const cap = window.Capacitor;
+  if (cap && cap.isNativePlatform && cap.isNativePlatform() && cap.Plugins && cap.Plugins.CapacitorHttp) {
+    const r = await cap.Plugins.CapacitorHttp.get({ url, headers: { Accept: "application/json" }, connectTimeout: 20000, readTimeout: 120000 });
+    if (r.status >= 400) throw new Error("dayzsalauncher.com a répondu avec l'erreur " + r.status + ".");
+    return typeof r.data === "string" ? JSON.parse(r.data) : r.data;
+  }
+  const r = await fetch(url, { headers: { Accept: "application/json" } });
+  if (!r.ok) throw new Error("dayzsalauncher.com a répondu avec l'erreur " + r.status + ".");
+  return r.json();
+}
+
+const norm = (o, ip, qp) => {
+  const e = o.endpoint || {};
+  ip = e.ip || o.ip || ip; qp = e.port || o.queryPort || qp || o.port;
+  return { key: ip + ":" + qp, ip, qp, gp: o.gamePort ?? null,
+    name: o.name || "Sans nom", players: o.players ?? 0, max: o.maxPlayers ?? 0, online: true,
+    map: o.map || "", ver: o.version || "", country: o.country || "", pw: !!o.password, time: parseTime(o.time ?? o.gameTime ?? o.ingameTime) };
+};
+
+async function loadAll(){
+  loading = true; tick();
+  try {
+    const j = await get(DZSA + "/launcher/servers/dayz");
+    const arr = Array.isArray(j.result) ? j.result : Array.isArray(j) ? j : null;
+    if (!arr) throw new Error("Réponse inattendue de dayzsalauncher.com.");
+    all = arr.map(o => norm(o)).sort((a, b) => b.players - a.players);
+    loadedAt = Date.now(); fillMaps();
+  } finally { loading = false; }
+}
+
+async function loadFavs(){
+  let last = "";
+  await Promise.all(favs.map(async k => {
+    const [ip, qp] = k.split(":"), old = cache[k] || {};
+    try {
+      const j = await get(DZSA + "/query/" + ip + "/" + qp);
+      if (!j.result) throw new Error("no result");
+      const n = norm(j.result, ip, qp);
+      cache[k] = { ...old, ...n, key: k, ip, qp, gp: n.gp ?? old.gp ?? null, online: true };
+    } catch (e) {
+      if (cache[k]) cache[k].online = false; else last = "Serveur introuvable : " + k;
+      if (/erreur|Failed|Network/i.test(e.message)) last = e.message;
+    }
+  }));
+  store.set("cache2", cache);
+  favAt = Date.now();
+  if (last) throw new Error(last);
+}
+
+async function refresh(force){
+  try {
+    if (tab === "favs") { if (favs.length) await loadFavs(); }
+    else if (force || !all.length || Date.now() - loadedAt > 300000) { renderList(); await loadAll(); }
+    err = "";
+  } catch (e) { err = e instanceof TypeError ? "Connexion impossible. Vérifie ton réseau." : e.message; }
+  renderList();
+}
+
+const el = (tag, cls, txt) => { const n = document.createElement(tag); if (cls) n.className = cls; if (txt != null) n.textContent = txt; return n; };
+
+function toggleFav(s){
+  if (favs.includes(s.key)) favs = favs.filter(k => k !== s.key);
+  else { favs.push(s.key); cache[s.key] = s; }
+  store.set("favs2", favs); store.set("cache2", cache);
+  renderList();
+}
+
+function row(s){
+  const li = el("li", "row" + (s.online ? "" : " off"));
+  const main = el("div", "main");
+  main.append(el("div", "name", s.name));
+  const addr = s.ip + ":" + (s.gp || s.qp);
+  const meta = [s.online ? "" : "Hors ligne", s.map, s.ver, s.country, s.pw ? "mot de passe" : "", addr].filter(Boolean).join("   ");
+  main.append(el("div", "meta", meta));
+  const pop = el("div", "pop");
+  pop.append(el("b", "", s.players), el("small", "", "/" + s.max));
+  const g = el("div", "gauge"), i = el("i", s.max && s.players / s.max >= 0.9 ? "full" : "");
+  i.style.width = (s.max ? Math.min(100, s.players / s.max * 100) : 0) + "%";
+  g.append(i); pop.append(g);
+  if (s.time) { const h = +s.time.slice(0, 2), day = h >= 6 && h < 18; pop.append(el("div", "time" + (day ? " day" : ""), (day ? "☀ " : "☾ ") + s.time)); }
+  const cp = el("button", "ico cp", "Copier");
+  cp.onclick = async () => { try { await navigator.clipboard.writeText(addr); cp.textContent = "Copié"; setTimeout(() => cp.textContent = "Copier", 1200); } catch { cp.textContent = addr; } };
+  const on = favs.includes(s.key);
+  const st = el("button", "ico" + (on ? " on" : ""), on ? "★" : "☆");
+  st.setAttribute("aria-label", on ? "Retirer des favoris" : "Ajouter aux favoris");
+  st.onclick = () => toggleFav(s);
+  li.append(main, pop, cp, st);
+  return li;
+}
+
+function chk(label, val, fn){
+  const l = el("label"), c = el("input"); c.type = "checkbox"; c.checked = val;
+  c.onchange = () => fn(c.checked);
+  l.append(c, document.createTextNode(label)); return l;
+}
+
+function buildTools(){
+  const t = $("#tools"); t.textContent = "";
+  if (tab !== "all") return;
+  const bar = el("div", "bar"), inp = el("input"); inp.type = "search"; inp.placeholder = "Rechercher un serveur (ex. Nasdara)"; inp.value = q;
+  let tm; inp.oninput = () => { clearTimeout(tm); tm = setTimeout(() => { q = inp.value.trim().toLowerCase(); shown = 100; renderList(); }, 150); };
+  bar.append(inp);
+  const sel = el("select", "mapsel"); sel.id = "mapsel"; sel.setAttribute("aria-label", "Filtrer par map");
+  sel.onchange = () => { mapSel = sel.value; shown = 100; renderList(); };
+  bar.append(sel);
+  const opts = el("div", "opts"), rf = el("button", "btn", "Actualiser");
+  rf.onclick = () => refresh(true);
+  opts.append(chk("Masquer les vides", hideEmpty, v => { hideEmpty = v; shown = 100; renderList(); }),
+              chk("Sans mot de passe", noPw, v => { noPw = v; shown = 100; renderList(); }), rf);
+  t.append(bar, opts);
+  fillMaps();
+}
+
+function fillMaps(){
+  const sel = $("#mapsel"); if (!sel) return;
+  const c = {}; all.forEach(s => { const k = mapKey(s) || "?"; c[k] = (c[k] || 0) + 1; });
+  const off = Object.keys(OFFICIAL).filter(k => c[k]);
+  const com = Object.keys(c).filter(k => !OFFICIAL[k]).sort((a, b) => c[b] - c[a]).slice(0, 40);
+  sel.textContent = "";
+  const o0 = el("option", "", "Toutes les maps"); o0.value = ""; sel.append(o0);
+  const group = (label, keys, name) => { if (!keys.length) return; const g = document.createElement("optgroup"); g.label = label;
+    keys.forEach(k => { const o = el("option", "", name(k) + " (" + c[k].toLocaleString("fr-FR") + ")"); o.value = k; g.append(o); }); sel.append(g); };
+  group("Maps officielles", off, k => OFFICIAL[k]);
+  group("Maps communautaires", com, k => k === "?" ? "Inconnue" : cap(k));
+  if (![...sel.options].some(o => o.value === mapSel)) mapSel = "";
+  sel.value = mapSel;
+}
+
+function renderList(){
+  document.querySelectorAll("nav button").forEach(b => b.setAttribute("aria-selected", b.id === (tab === "favs" ? "t-favs" : "t-all")));
+  const e = $("#err"); e.textContent = ""; if (err) e.append(el("div", "err", err));
+  const list = $("#list"); list.textContent = "";
+  let data, total = 0;
+  if (tab === "favs") data = favs.map(k => cache[k]).filter(Boolean).sort((a, b) => b.players - a.players);
+  else {
+    const f = all.filter(s => (!hideEmpty || s.players > 0) && (!noPw || !s.pw) && (!mapSel || mapKey(s) === mapSel) && (!q || s.name.toLowerCase().includes(q)));
+    total = f.length; data = f.slice(0, shown);
+  }
+  if (!data.length) list.append(el("li", "msg", tab === "favs"
+    ? "Aucun favori. Cherche un serveur dans l'onglet Serveurs et touche l'étoile."
+    : loading ? "Chargement de la liste complète (plusieurs Mo)…" : all.length ? "Aucun serveur ne correspond." : ""));
+  data.forEach(s => list.append(row(s)));
+  if (tab === "all" && total > shown) {
+    const more = el("button", "btn more", "Afficher plus (" + (total - shown) + " restants)");
+    more.onclick = () => { shown += 100; renderList(); };
+    list.append(more);
+  }
+  tick();
+}
+
+function ago(t){ const s = Math.round((Date.now() - t) / 1000); return s < 60 ? s + " s" : Math.floor(s / 60) + " min"; }
+function tick(){
+  const s = $("#status");
+  if (tab === "all") s.textContent = loading ? "Chargement…" : loadedAt ? all.length.toLocaleString("fr-FR") + " serveurs, il y a " + ago(loadedAt) : "";
+  else s.textContent = favAt ? "Mis à jour il y a " + ago(favAt) : "";
+}
+
+$("#t-favs").onclick = () => { tab = "favs"; buildTools(); renderList(); refresh(); };
+$("#t-all").onclick = () => { tab = "all"; buildTools(); renderList(); refresh(); };
+setInterval(tick, 1000);
+setInterval(() => { if (!document.hidden) refresh(); }, 60000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+buildTools(); renderList(); refresh();
+</script>
+</body>
+</html>
