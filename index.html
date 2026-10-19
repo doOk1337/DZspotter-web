@@ -20,6 +20,7 @@ body{background:var(--bg);color:var(--text);font:16px/1.35 "Bahnschrift","Roboto
 header{position:sticky;top:0;z-index:2;background:var(--bg);border-bottom:1px solid var(--line);padding:calc(10px + max(env(safe-area-inset-top),var(--safe-area-inset-top,0px))) 14px 0}
 .top{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
 h1{margin:0;font-size:25px;font-weight:700;letter-spacing:.5px}h1 b{color:var(--hot)}
+#status.live::before{content:"";display:inline-block;width:8px;height:8px;border-radius:50%;background:#5fd38d;margin-right:6px}
 #status{font-size:13px;color:var(--mute);text-align:right}
 nav{display:flex;gap:22px;margin-top:6px}
 nav button{background:none;border:0;border-bottom:3px solid transparent;color:var(--mute);font:inherit;font-size:17px;padding:8px 0;cursor:pointer}
@@ -43,6 +44,8 @@ ul{list-style:none;margin:0;padding:0}
 .meta{font-size:13px;color:var(--mute);margin-top:2px;word-break:break-word}
 .pop{width:84px;text-align:right}
 .pop b{font-size:18px}
+.pop b.up{animation:popUp 4s ease-out}
+.pop b.down{animation:popDown 4s ease-out}
 .pop small{color:var(--mute)}
 .gauge{height:5px;background:var(--line);border-radius:3px;margin-top:5px;overflow:hidden}
 .gauge i{display:block;height:100%;background:var(--hot)}
@@ -54,6 +57,9 @@ ul{list-style:none;margin:0;padding:0}
 .msg{color:var(--mute);padding:24px 0;text-align:center}
 .more{display:block;margin:16px auto 0}
 .err{background:#2a0e10;border:1px solid var(--amber);border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:14px;word-break:break-word}
+@keyframes popUp{from{color:#5fd38d}to{color:var(--text)}}
+@keyframes popDown{from{color:var(--hot)}to{color:var(--text)}}
+@media (prefers-reduced-motion:reduce){.pop b.up,.pop b.down{animation:none}}
 </style>
 </head>
 <body>
@@ -137,13 +143,18 @@ async function loadFavs(){
   if (last) throw new Error(last);
 }
 
+let busy = false, again = false, lastRun = 0;
 async function refresh(force){
+  if (busy) { again = true; return; }
+  busy = true;
   try {
     if (tab === "favs") { if (favs.length) await loadFavs(); }
-    else if (force || !all.length || Date.now() - loadedAt > 300000) { renderList(); await loadAll(); }
+    else if (force || !all.length) { renderList(); await loadAll(); }
     err = "";
   } catch (e) { err = e instanceof TypeError ? "Connexion impossible. Vérifie ton réseau." : e.message; }
+  finally { busy = false; lastRun = Date.now(); }
   renderList();
+  if (again) { again = false; refresh(); }
 }
 
 const el = (tag, cls, txt) => { const n = document.createElement(tag); if (cls) n.className = cls; if (txt != null) n.textContent = txt; return n; };
@@ -155,6 +166,7 @@ function toggleFav(s){
   renderList();
 }
 
+const prevP = {};
 function row(s){
   const li = el("li", "row" + (s.online ? "" : " off"));
   const main = el("div", "main");
@@ -163,7 +175,10 @@ function row(s){
   const meta = [s.online ? "" : "Hors ligne", s.map, s.ver, s.country, s.pw ? "mot de passe" : "", addr].filter(Boolean).join("   ");
   main.append(el("div", "meta", meta));
   const pop = el("div", "pop");
-  pop.append(el("b", "", s.players), el("small", "", "/" + s.max));
+  const nb = el("b", "", s.players), was = prevP[s.key];
+  if (was !== undefined && was !== s.players) nb.className = s.players > was ? "up" : "down";
+  prevP[s.key] = s.players;
+  pop.append(nb, el("small", "", "/" + s.max));
   const g = el("div", "gauge"), i = el("i", s.max && s.players / s.max >= 0.9 ? "full" : "");
   i.style.width = (s.max ? Math.min(100, s.players / s.max * 100) : 0) + "%";
   g.append(i); pop.append(g);
@@ -186,7 +201,12 @@ function chk(label, val, fn){
 
 function buildTools(){
   const t = $("#tools"); t.textContent = "";
-  if (tab !== "all") return;
+  if (tab !== "all") {
+    const o = el("div", "opts"), rf2 = el("button", "btn", "Actualiser les favoris");
+    rf2.onclick = () => refresh(true);
+    o.append(rf2);
+    t.append(o); return;
+  }
   const bar = el("div", "bar"), inp = el("input"); inp.type = "search"; inp.placeholder = "Rechercher un serveur (ex. Nasdara)"; inp.value = q;
   let tm; inp.oninput = () => { clearTimeout(tm); tm = setTimeout(() => { q = inp.value.trim().toLowerCase(); shown = 100; renderList(); }, 150); };
   bar.append(inp);
@@ -248,8 +268,10 @@ function tick(){
 $("#t-favs").onclick = () => { tab = "favs"; buildTools(); renderList(); refresh(); };
 $("#t-all").onclick = () => { tab = "all"; buildTools(); renderList(); refresh(); };
 setInterval(tick, 1000);
-setInterval(() => { if (!document.hidden) refresh(); }, 60000);
-document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
+setInterval(() => {
+  if (tab === "favs" && !document.hidden && !busy && Date.now() - lastRun >= 60000) refresh();
+}, 5000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden && tab === "favs" && Date.now() - lastRun >= 60000) refresh(); });
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
 buildTools(); renderList(); refresh();
 </script>
