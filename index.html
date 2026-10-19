@@ -32,6 +32,8 @@ input:focus,select:focus,button:focus-visible{outline:2px solid var(--hot);outli
 .mapsel{width:100%;background:var(--panel);border:1px solid var(--line);border-radius:6px;color:var(--text);font:inherit;padding:11px 12px;margin-top:8px}
 .time{font-size:12px;color:var(--mute);margin-top:3px;white-space:nowrap}
 .time.day{color:var(--full)}
+.queue{font-size:12px;font-weight:700;color:var(--hot);margin-top:3px;white-space:nowrap}
+.queue.old{color:var(--mute);font-weight:400}
 .opts{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:6px;font-size:14px;color:var(--mute)}
 .opts label{display:flex;align-items:center;gap:6px;cursor:pointer}
 input[type=checkbox]{accent-color:var(--amber);width:18px;height:18px}
@@ -91,6 +93,17 @@ let q = "", hideEmpty = true, noPw = false, mapSel = "", shown = 100, err = "";
 const OFFICIAL = { chernarusplus: "Chernarus", enoch: "Livonia", sakhal: "Sakhal" };
 const mapKey = s => (s.map || "").toLowerCase().trim();
 const cap = k => k.charAt(0).toUpperCase() + k.slice(1);
+const QUEUE_URL = "https://raw.githubusercontent.com/doOk1337/DZspotter-web/data/queue.json";
+let queues = {}, queueAt = 0;
+async function loadQueues(){
+  try {
+    const j = await get(QUEUE_URL + "?t=" + Math.floor(Date.now() / 300000));
+    const q = j && j.queues && typeof j.queues === "object" ? j.queues : {};
+    const changed = JSON.stringify(q) !== JSON.stringify(queues);
+    queues = q; queueAt = (j.updated || 0) * 1000;
+    return changed;
+  } catch (e) { return false; }
+}
 const parseTime = v => { const m = String(v ?? "").match(/(\d{1,2}):(\d{2})/); return m ? m[1].padStart(2, "0") + ":" + m[2] : ""; };
 // En APK, la requête part en natif (pas de CORS, délai long pour la grosse liste).
 async function get(url){
@@ -154,6 +167,7 @@ async function refresh(force){
   } catch (e) { err = e instanceof TypeError ? "Connexion impossible. Vérifie ton réseau." : e.message; }
   finally { busy = false; lastRun = Date.now(); }
   renderList();
+  loadQueues().then(ch => { if (ch) renderList(); });
   if (again) { again = false; refresh(); }
 }
 
@@ -183,6 +197,13 @@ function row(s){
   i.style.width = (s.max ? Math.min(100, s.players / s.max * 100) : 0) + "%";
   g.append(i); pop.append(g);
   if (s.time) { const h = +s.time.slice(0, 2), day = h >= 6 && h < 18; pop.append(el("div", "time" + (day ? " day" : ""), (day ? "☀ " : "☾ ") + s.time)); }
+  const q = queues[s.key];
+  if (q > 0 && s.max > 0 && s.players >= s.max - 1) {
+    const age = queueAt ? Math.round((Date.now() - queueAt) / 60000) : 0, old = age > 45;
+    const qd = el("div", "queue" + (old ? " old" : ""), "file : " + q + (old ? " (ancien)" : ""));
+    if (queueAt) qd.title = "Relevé il y a " + age + " min";
+    pop.append(qd);
+  }
   const cp = el("button", "ico cp", "Copier");
   cp.onclick = async () => { try { await navigator.clipboard.writeText(addr); cp.textContent = "Copié"; setTimeout(() => cp.textContent = "Copier", 1200); } catch { cp.textContent = addr; } };
   const on = favs.includes(s.key);
